@@ -3,9 +3,9 @@ import http from 'http';
 import https from 'https';
 import { readFileSync } from 'fs';
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
-// Read environment variables
+// Read environment variables (from .env file and/or process.env - process.env wins)
 let envVars = {};
 try {
   const envContent = readFileSync('.env', 'utf8');
@@ -16,8 +16,12 @@ try {
     }
   });
 } catch (error) {
-  console.log('No .env file found');
+  // No .env file - use process.env only (e.g. on Render, Vercel)
 }
+// process.env overrides .env (needed for Render/Vercel where vars are set in dashboard)
+if (process.env.REPLICATE_API_TOKEN) envVars.REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+if (process.env.MODEL_ID) envVars.MODEL_ID = process.env.MODEL_ID;
+if (process.env.PROMPT_TEMPLATE) envVars.PROMPT_TEMPLATE = process.env.PROMPT_TEMPLATE;
 
 // Function to make Replicate API calls with retry logic for E003 service unavailable
 async function callReplicateAPI(model, input, isVideo = false, attempt = 0) {
