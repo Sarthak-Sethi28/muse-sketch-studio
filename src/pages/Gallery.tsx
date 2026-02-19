@@ -286,30 +286,6 @@ export default function Gallery() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer className="bg-surface-primary py-6 border-t border-border-subtle">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-text-secondary">
-            Made with ❤️ by{' '}
-            <a href="https://silin.ca" target="_blank" rel="noopener noreferrer" className="text-text-primary hover:underline">
-              Silin
-            </a>
-            ,{' '}
-            <a href="https://sethisarthak.com" target="_blank" rel="noopener noreferrer" className="text-text-primary hover:underline">
-              Sarthak
-            </a>
-            ,{' '}
-            <a href="https://github.com/shauraya-mohan" target="_blank" rel="noopener noreferrer" className="text-text-primary hover:underline">
-              Shauraya
-            </a>
-            {' '}and{' '}
-            <a href="https://github.com/meharpruthi" target="_blank" rel="noopener noreferrer" className="text-text-primary hover:underline">
-              Mehar
-            </a>
-            .
-          </p>
-        </div>
-      </footer>
     </div>
   );
 }

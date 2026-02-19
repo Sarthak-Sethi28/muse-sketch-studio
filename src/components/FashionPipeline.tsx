@@ -53,11 +53,13 @@ interface FashionPipelineProps {
   designState: DesignState;
   onDesignStateChange: (state: DesignState) => void;
   onGenerateSketch: () => void;
-  onAddColors: () => void;
+  onEditSketch: (instruction: string) => void;
+  onAddColors: (refinementPrompt?: string) => void;
   onGenerateModel: () => void;
   onGenerate3D: () => void;
   onGenerateRunway: () => void;
-  onEditColors: () => void; // New: regenerate with different colors
+  onEditColors: (refinementPrompt: string) => void;
+  onSaveToPortfolio?: () => void; // Update existing entry (avoids duplicates)
   isGenerating: boolean;
   className?: string;
 }
@@ -304,22 +306,28 @@ export function FashionPipeline({
   designState, 
   onDesignStateChange,
   onGenerateSketch,
+  onEditSketch,
   onAddColors,
   onGenerateModel,
   onGenerate3D,
   onGenerateRunway,
   onEditColors,
+  onSaveToPortfolio,
   isGenerating,
   className 
 }: FashionPipelineProps) {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [showColorRefinement, setShowColorRefinement] = useState(false);
+  const [colorRefinementPrompt, setColorRefinementPrompt] = useState("");
+  const [showSketchRefinement, setShowSketchRefinement] = useState(false);
+  const [sketchRefinementPrompt, setSketchRefinementPrompt] = useState("");
 
   const updateDesignState = (updates: Partial<DesignState>) => {
     onDesignStateChange({ ...designState, ...updates });
   };
 
-  // Save current design to portfolio
+  // Save/update current design in portfolio (uses parent's sync to avoid duplicates)
   const handleSaveToPortfolio = () => {
     if (!designState.sketchUrl && !designState.coloredUrl && !designState.modelUrl) {
       toast({
@@ -329,22 +337,8 @@ export function FashionPipeline({
       });
       return;
     }
-
-    try {
-      saveToPortfolio({
-        name: `${designState.garmentType || 'Design'} - ${new Date().toLocaleDateString()}`,
-        category: designState.category,
-        garmentType: designState.garmentType,
-        gender: designState.gender,
-        prompt: designState.prompt,
-        sketchUrl: designState.sketchUrl,
-        coloredUrl: designState.coloredUrl,
-        modelUrl: designState.modelUrl,
-        runwayUrl: designState.runwayUrl,
-        angleViews: designState.angleViews,
-        colors: designState.selectedColors
-      });
-
+    if (onSaveToPortfolio) {
+      onSaveToPortfolio();
       toast({
         title: "Saved to Portfolio! 🎉",
         description: "Your design has been saved successfully.",
@@ -353,12 +347,36 @@ export function FashionPipeline({
           View Portfolio
         </Button>
       });
-    } catch (error) {
-      toast({
-        title: "Save failed",
-        description: "Could not save to portfolio. Please try again.",
-        variant: "destructive"
-      });
+    } else {
+      try {
+        saveToPortfolio({
+          name: `${designState.garmentType || 'Design'} - ${new Date().toLocaleDateString()}`,
+          category: designState.category,
+          garmentType: designState.garmentType,
+          gender: designState.gender,
+          prompt: designState.prompt,
+          sketchUrl: designState.sketchUrl,
+          coloredUrl: designState.coloredUrl,
+          modelUrl: designState.modelUrl,
+          runwayUrl: designState.runwayUrl,
+          angleViews: designState.angleViews,
+          colors: designState.selectedColors
+        });
+        toast({
+          title: "Saved to Portfolio! 🎉",
+          description: "Your design has been saved successfully.",
+          action: <Button size="sm" variant="outline" onClick={() => navigate('/portfolio')}>
+            <FolderOpen className="h-4 w-4 mr-2" />
+            View Portfolio
+          </Button>
+        });
+      } catch (error) {
+        toast({
+          title: "Save failed",
+          description: "Could not save to portfolio. Please try again.",
+          variant: "destructive"
+        });
+      }
     }
   };
 
@@ -493,76 +511,6 @@ export function FashionPipeline({
             <div className="space-y-4">
               <h3 className="text-sm font-medium text-text-primary">Step 1: Design Prompt</h3>
               
-              {/* Upload Image Option */}
-              <div className="space-y-3 p-4 border-2 border-dashed border-gray-300 rounded-lg bg-gray-50">
-                <div className="flex items-center justify-between">
-                  <label className="text-sm font-medium text-text-primary flex items-center gap-2">
-                    <Upload className="h-4 w-4" />
-                    Upload Your Own Image (Optional)
-                  </label>
-                  {designState.uploadedImageUrl && (
-                    <Button 
-                      size="sm" 
-                      variant="ghost"
-                      onClick={() => updateDesignState({ uploadedImageUrl: null, useUploadedImage: false })}
-                    >
-                      Clear
-                    </Button>
-                  )}
-                </div>
-                
-                <p className="text-xs text-text-muted">
-                  Start with your own photo or sketch instead of AI generation
-                </p>
-                
-                {!designState.uploadedImageUrl ? (
-                  <div>
-                    <input
-                      type="file"
-                      id="image-upload"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            updateDesignState({ 
-                              uploadedImageUrl: reader.result as string,
-                              useUploadedImage: true 
-                            });
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                      }}
-                    />
-                    <label htmlFor="image-upload">
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
-                        className="w-full"
-                        onClick={() => document.getElementById('image-upload')?.click()}
-                        type="button"
-                      >
-                        <ImageIcon className="h-4 w-4 mr-2" />
-                        Choose Image
-                      </Button>
-                    </label>
-                  </div>
-                ) : (
-                  <div className="relative">
-                    <img 
-                      src={designState.uploadedImageUrl} 
-                      alt="Uploaded" 
-                      className="w-full h-32 object-cover rounded-md"
-                    />
-                    <Badge className="absolute top-2 right-2 bg-green-500">
-                      Uploaded ✓
-                    </Badge>
-                  </div>
-                )}
-              </div>
-
               {/* Add Logo Option */}
               <div className="space-y-3 p-4 border-2 border-dashed border-blue-200 rounded-lg bg-blue-50">
                 <div className="flex items-center justify-between">
@@ -582,10 +530,7 @@ export function FashionPipeline({
                 </div>
                 
                 <p className="text-xs text-text-muted">
-                  Upload brand logo or graphic to add to your design
-                </p>
-                <p className="text-xs text-blue-600 font-medium mt-1">
-                  💡 Tip: DON'T mention brand names in your prompt - just upload the logo and describe the style!
+                  Upload your logo and the AI will automatically place it on the garment — no instructions needed.
                 </p>
                 
                 {!designState.uploadedLogoUrl ? (
@@ -839,7 +784,7 @@ export function FashionPipeline({
               </div>
 
               <Button 
-                onClick={onAddColors}
+                onClick={() => onAddColors()}
                 disabled={isGenerating || designState.selectedColors.length === 0}
                 className="w-full"
               >
@@ -875,28 +820,72 @@ export function FashionPipeline({
                   <h4 className="text-sm font-medium text-text-primary">Want to refine?</h4>
                   <div className="grid grid-cols-2 gap-2">
                     <Button 
-                      onClick={() => {
-                        updateDesignState({ currentStep: 'prompt' });
-                      }}
+                      onClick={() => setShowSketchRefinement(!showSketchRefinement)}
                       variant="outline"
                       size="sm"
-                      className="w-full"
+                      className={cn("w-full", showSketchRefinement && "ring-2 ring-blue-400")}
                     >
                       <Sparkles className="h-4 w-4 mr-2" />
                       Edit Sketch
                     </Button>
                     <Button 
-                      onClick={() => {
-                        updateDesignState({ currentStep: 'colors' });
-                      }}
+                      onClick={() => setShowColorRefinement(!showColorRefinement)}
                       variant="outline"
                       size="sm"
-                      className="w-full"
+                      className={cn("w-full", showColorRefinement && "ring-2 ring-blue-400")}
                     >
                       <Palette className="h-4 w-4 mr-2" />
                       Edit Colors
                     </Button>
                   </div>
+                  {showSketchRefinement && (
+                    <div className="pt-2 space-y-2 border-t border-blue-200 mt-2">
+                      <Textarea
+                        placeholder="e.g. Add more detail to the sleeves, make the collar wider, add pockets"
+                        value={sketchRefinementPrompt}
+                        onChange={(e) => setSketchRefinementPrompt(e.target.value)}
+                        className="min-h-[72px] text-sm resize-none"
+                        disabled={isGenerating}
+                      />
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        disabled={!sketchRefinementPrompt.trim() || isGenerating}
+                        onClick={() => {
+                          onEditSketch(sketchRefinementPrompt.trim());
+                          setSketchRefinementPrompt("");
+                          setShowSketchRefinement(false);
+                        }}
+                      >
+                        <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                        Apply Sketch Changes
+                      </Button>
+                    </div>
+                  )}
+                  {showColorRefinement && (
+                    <div className="pt-2 space-y-2 border-t border-blue-200 mt-2">
+                      <Textarea
+                        placeholder="e.g. Change coat to black, shirt to white, tie to black. Tip: Use darker shades on heavier pieces (jacket, coat), lighter tones on lighter elements (shirt, liner)."
+                        value={colorRefinementPrompt}
+                        onChange={(e) => setColorRefinementPrompt(e.target.value)}
+                        className="min-h-[72px] text-sm resize-none"
+                        disabled={isGenerating}
+                      />
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        disabled={!colorRefinementPrompt.trim() || isGenerating}
+                        onClick={() => {
+                          onEditColors(colorRefinementPrompt.trim());
+                          setColorRefinementPrompt("");
+                          setShowColorRefinement(false);
+                        }}
+                      >
+                        <Palette className="h-3.5 w-3.5 mr-1.5" />
+                        Apply Color Changes
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -937,28 +926,72 @@ export function FashionPipeline({
                   <h4 className="text-sm font-medium text-text-primary">Want to refine?</h4>
                   <div className="grid grid-cols-2 gap-2">
                     <Button 
-                      onClick={() => {
-                        updateDesignState({ currentStep: 'prompt' });
-                      }}
+                      onClick={() => setShowSketchRefinement(!showSketchRefinement)}
                       variant="outline"
                       size="sm"
-                      className="w-full"
+                      className={cn("w-full", showSketchRefinement && "ring-2 ring-blue-400")}
                     >
                       <Sparkles className="h-4 w-4 mr-2" />
                       Edit Sketch
                     </Button>
                     <Button 
-                      onClick={() => {
-                        updateDesignState({ currentStep: 'colors' });
-                      }}
+                      onClick={() => setShowColorRefinement(!showColorRefinement)}
                       variant="outline"
                       size="sm"
-                      className="w-full"
+                      className={cn("w-full", showColorRefinement && "ring-2 ring-blue-400")}
                     >
                       <Palette className="h-4 w-4 mr-2" />
                       Edit Colors
                     </Button>
                   </div>
+                  {showSketchRefinement && (
+                    <div className="pt-2 space-y-2 border-t border-blue-200 mt-2">
+                      <Textarea
+                        placeholder="e.g. Add more detail to the sleeves, make the collar wider, add pockets"
+                        value={sketchRefinementPrompt}
+                        onChange={(e) => setSketchRefinementPrompt(e.target.value)}
+                        className="min-h-[72px] text-sm resize-none"
+                        disabled={isGenerating}
+                      />
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        disabled={!sketchRefinementPrompt.trim() || isGenerating}
+                        onClick={() => {
+                          onEditSketch(sketchRefinementPrompt.trim());
+                          setSketchRefinementPrompt("");
+                          setShowSketchRefinement(false);
+                        }}
+                      >
+                        <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                        Apply Sketch Changes
+                      </Button>
+                    </div>
+                  )}
+                  {showColorRefinement && (
+                    <div className="pt-2 space-y-2 border-t border-blue-200 mt-2">
+                      <Textarea
+                        placeholder="e.g. Change coat to black, shirt to white, tie to black. Tip: Use darker shades on heavier pieces (jacket, coat), lighter tones on lighter elements (shirt, liner)."
+                        value={colorRefinementPrompt}
+                        onChange={(e) => setColorRefinementPrompt(e.target.value)}
+                        className="min-h-[72px] text-sm resize-none"
+                        disabled={isGenerating}
+                      />
+                      <Button
+                        size="sm"
+                        className="w-full"
+                        disabled={!colorRefinementPrompt.trim() || isGenerating}
+                        onClick={() => {
+                          onEditColors(colorRefinementPrompt.trim());
+                          setColorRefinementPrompt("");
+                          setShowColorRefinement(false);
+                        }}
+                      >
+                        <Palette className="h-3.5 w-3.5 mr-1.5" />
+                        Apply Color Changes
+                      </Button>
+                    </div>
+                  )}
                 </div>
               </div>
 

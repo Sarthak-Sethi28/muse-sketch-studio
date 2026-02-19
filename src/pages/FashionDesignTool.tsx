@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { FashionPipeline } from "@/components/FashionPipeline";
 import { FashionCanvas } from "@/components/FashionCanvas";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useToast } from "@/hooks/use-toast";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Home } from "lucide-react";
+import { Home, FolderOpen } from "lucide-react";
+import { saveToPortfolio } from "@/pages/Portfolio";
 
 type DesignStep = 'prompt' | 'sketch' | 'colors' | 'model' | '3d' | 'runway';
 
@@ -85,6 +86,7 @@ export default function FashionDesignTool() {
   });
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentOperation, setCurrentOperation] = useState<string>("");
+  const savedDesignIdRef = useRef<string | null>(null); // Ref so it's available synchronously (avoids duplicate saves)
   const isMobile = useIsMobile();
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -118,6 +120,41 @@ export default function FashionDesignTool() {
     }
   };
 
+  // Save/update portfolio entry whenever a stage completes
+  const syncPortfolio = (updatedState: Partial<typeof designState>, existingId?: string | null) => {
+    const merged = { ...designState, ...updatedState };
+    if (!merged.sketchUrl) return; // Only save once we have at least a sketch
+
+    const existing = JSON.parse(localStorage.getItem('fashion-portfolio') || '[]');
+
+    const entry = {
+      name: merged.prompt ? merged.prompt.slice(0, 40) + (merged.prompt.length > 40 ? '...' : '') : 'Untitled Design',
+      category: merged.category || 'Uncategorized',
+      garmentType: merged.garmentType || '',
+      gender: merged.gender || '',
+      prompt: merged.prompt || '',
+      sketchUrl: merged.sketchUrl || null,
+      coloredUrl: merged.coloredUrl || null,
+      modelUrl: merged.modelUrl || null,
+      runwayUrl: merged.runwayUrl || null,
+      angleViews: merged.angleViews || [],
+      colors: merged.selectedColors || [],
+    };
+
+    const idToUse = existingId ?? savedDesignIdRef.current;
+    if (idToUse) {
+      const updated = existing.map((d: { id: string }) =>
+        d.id === idToUse ? { ...d, ...entry } : d
+      );
+      localStorage.setItem('fashion-portfolio', JSON.stringify(updated));
+      return idToUse;
+    } else {
+      const saved = saveToPortfolio(entry);
+      savedDesignIdRef.current = saved.id;
+      return saved.id;
+    }
+  };
+
   // Generate sketch function (extracted for reuse)
   const generateSketch = async (prompt: string, isEditInstruction: boolean = false) => {
     if (!prompt.trim()) {
@@ -148,7 +185,7 @@ export default function FashionDesignTool() {
           garmentType: designState.garmentType,
           gender: designState.gender,
           detailedFeatures: designState.detailedFeatures,
-          previousSketchUrl: designState.previousSketchUrl, // Pass previous for refinement
+          previousSketchUrl: isEditInstruction ? designState.sketchUrl : designState.previousSketchUrl, // Current sketch when editing
           uploadedImageUrl: designState.uploadedImageUrl, // User uploaded image
           uploadedLogoUrl: designState.uploadedLogoUrl, // User uploaded logo
           useUploadedImage: designState.useUploadedImage, // Flag to use uploaded image
@@ -162,14 +199,23 @@ export default function FashionDesignTool() {
         setDesignState(prev => {
           const newState = {
             ...prev,
-            previousSketchUrl: prev.sketchUrl, // Save current as previous before updating
+            previousSketchUrl: prev.sketchUrl,
             sketchUrl: data.imageUrl,
-            currentStep: 'colors'
+            currentStep: 'colors',
+            // When editing sketch, clear downstream outputs so user re-adds colors
+            ...(isEditInstruction ? {
+              coloredUrl: null,
+              previousColoredUrl: null,
+              modelUrl: null,
+              threeDUrl: null,
+              runwayUrl: null,
+              angleViews: undefined
+            } : {})
           };
-          // DEBUG: Verify logo is preserved in state
           console.log('✅ State updated - Logo still present?', !!newState.uploadedLogoUrl);
           return newState;
         });
+        syncPortfolio({ sketchUrl: data.imageUrl }, savedDesignIdRef.current);
         toast({ 
           title: designState.previousSketchUrl ? "Sketch refined!" : "Sketch generated!", 
           description: "Ready for coloring." 
@@ -198,11 +244,17 @@ export default function FashionDesignTool() {
   };
 
   // Step 2: Add Colors
-  const handleAddColors = async () => {
+  const handleAddColors = async (refinementPrompt?: string) => {
     if (!designState.sketchUrl) return;
 
+    // Only treat as refinement when we have a valid string (not event object from button click)
+    const hasValidRefinement = typeof refinementPrompt === 'string' && refinementPrompt.trim().length > 0 && !!designState.coloredUrl;
+    const isRefinement = hasValidRefinement;
+    const promptToSend = isRefinement ? (refinementPrompt as string).trim() : designState.prompt;
+    const previousUrl = isRefinement ? designState.coloredUrl : designState.previousColoredUrl;
+
     setIsGenerating(true);
-    setCurrentOperation(designState.previousColoredUrl ? "Refining colors based on previous version..." : "Adding colors to design...");
+    setCurrentOperation(isRefinement ? "Applying your color changes..." : (previousUrl ? "Refining colors..." : "Adding colors to design..."));
     
     try {
       const response = await fetch('http://localhost:3001/api/add-colors', {
@@ -211,8 +263,8 @@ export default function FashionDesignTool() {
         body: JSON.stringify({ 
           sketchUrl: designState.sketchUrl,
           colors: designState.selectedColors,
-          prompt: designState.prompt,
-          previousColoredUrl: designState.previousColoredUrl // Pass previous for refinement
+          prompt: promptToSend,
+          previousColoredUrl: previousUrl
         })
       });
 
@@ -221,13 +273,21 @@ export default function FashionDesignTool() {
       if (data.success && data.imageUrl) {
         setDesignState(prev => ({
           ...prev,
-          previousColoredUrl: prev.coloredUrl, // Save current as previous before updating
+          previousColoredUrl: prev.coloredUrl,
           coloredUrl: data.imageUrl,
-          currentStep: 'model'
+          currentStep: 'model',
+          // If refinement: clear downstream outputs so user regenerates model + angles + runway
+          ...(isRefinement ? {
+            modelUrl: null,
+            threeDUrl: null,
+            runwayUrl: null,
+            angleViews: undefined
+          } : {})
         }));
+        syncPortfolio({ coloredUrl: data.imageUrl }, savedDesignIdRef.current);
         toast({ 
-          title: designState.previousColoredUrl ? "Colors refined!" : "Colors added!", 
-          description: "Ready for model generation." 
+          title: isRefinement ? "Colors updated!" : (previousUrl ? "Colors refined!" : "Colors added!"), 
+          description: isRefinement ? "Regenerate model photo to see changes." : "Ready for model generation." 
         });
       } else {
         throw new Error(data.error || 'Failed to add colors');
@@ -240,10 +300,19 @@ export default function FashionDesignTool() {
     }
   };
 
-  // Edit/Regenerate Colors
-  const handleEditColors = async () => {
-    // Simply rerun the color addition with current selections
-    await handleAddColors();
+  // Edit Sketch — inline refinement (no navigation to prompt page)
+  const handleEditSketch = (instruction: string) => {
+    generateSketch(instruction, true);
+  };
+
+  // Edit Colors — inline refinement (no navigation)
+  const handleEditColors = (refinementPrompt: string) => {
+    handleAddColors(refinementPrompt);
+  };
+
+  // Manual save — updates existing entry (avoids duplicates)
+  const handleSaveToPortfolio = () => {
+    syncPortfolio({}, savedDesignIdRef.current);
   };
 
   // Step 3: Generate Model Photo
@@ -254,12 +323,20 @@ export default function FashionDesignTool() {
     setCurrentOperation("Creating model photo...");
     
     try {
+      const genderLabel = designState.gender?.toLowerCase();
+      const modelType = genderLabel === 'men' || genderLabel === 'male'
+        ? 'male man fashion model'
+        : genderLabel === 'women' || genderLabel === 'female'
+          ? 'female woman fashion model'
+          : 'diverse fashion model';
+
       const response = await fetch('http://localhost:3001/api/generate-model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           designUrl: designState.coloredUrl,
-          modelType: "diverse fashion model",
+          modelType,
+          gender: genderLabel,
           pose: "standing"
         })
       });
@@ -272,6 +349,7 @@ export default function FashionDesignTool() {
           modelUrl: data.imageUrl,
           currentStep: '3d'
         }));
+        syncPortfolio({ modelUrl: data.imageUrl }, savedDesignIdRef.current);
         toast({ title: "Model photo created!", description: "Ready for 3D visualization." });
       } else {
         throw new Error(data.error || 'Failed to generate model photo');
@@ -297,6 +375,7 @@ export default function FashionDesignTool() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           modelPhotoUrl: designState.modelUrl,
+          coloredUrl: designState.coloredUrl,
           garmentType: designState.garmentType,
           detailedFeatures: designState.detailedFeatures
         })
@@ -340,7 +419,11 @@ export default function FashionDesignTool() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           modelPhotoUrl: designState.modelUrl,
-          walkStyle: "confident ramp walk"
+          walkStyle: "confident ramp walk",
+          gender: designState.gender,
+          garmentType: designState.garmentType,
+          prompt: designState.prompt,
+          detailedFeatures: designState.detailedFeatures
         })
       });
 
@@ -351,6 +434,7 @@ export default function FashionDesignTool() {
           ...prev,
           runwayUrl: data.videoUrl
         }));
+        syncPortfolio({ runwayUrl: data.videoUrl }, savedDesignIdRef.current);
         toast({ title: "Runway video created!", description: "Your fashion show is ready!" });
       } else {
         throw new Error(data.error || 'Failed to generate runway video');
@@ -409,7 +493,17 @@ export default function FashionDesignTool() {
         <h1 className="font-dancing text-2xl font-semibold text-text-primary">
           Muse Sketch Studio
         </h1>
-        <div className="w-20"></div> {/* Spacer for centering */}
+        <div className="flex items-center">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate("/portfolio")}
+            className="text-text-secondary hover:text-text-primary"
+          >
+            <FolderOpen className="h-4 w-4 mr-2" />
+            Portfolio
+          </Button>
+        </div>
       </div>
       
       {/* Main Content */}
@@ -421,11 +515,13 @@ export default function FashionDesignTool() {
           designState={designState}
           onDesignStateChange={setDesignState}
           onGenerateSketch={handleGenerateSketch}
+          onEditSketch={handleEditSketch}
           onAddColors={handleAddColors}
           onGenerateModel={handleGenerateModel}
           onGenerate3D={handleGenerateAngles}
           onGenerateRunway={handleGenerateRunway}
           onEditColors={handleEditColors}
+          onSaveToPortfolio={handleSaveToPortfolio}
           isGenerating={isGenerating}
         />
         

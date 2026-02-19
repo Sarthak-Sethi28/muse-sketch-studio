@@ -19,12 +19,13 @@ try {
   console.log('No .env file found');
 }
 
-// Function to make Replicate API calls
-async function callReplicateAPI(model, input, isVideo = false) {
+// Function to make Replicate API calls with retry logic for E003 service unavailable
+async function callReplicateAPI(model, input, isVideo = false, attempt = 0) {
+  const maxRetries = 4;
+  const retryDelays = [5000, 10000, 20000, 40000]; // exponential backoff up to 40s
+
   return new Promise((resolve, reject) => {
-    const postData = JSON.stringify({
-      input: input
-    });
+    const postData = JSON.stringify({ input });
 
     const options = {
       hostname: 'api.replicate.com',
@@ -40,15 +41,12 @@ async function callReplicateAPI(model, input, isVideo = false) {
 
     const req = https.request(options, (res) => {
       let data = '';
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
+      res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
         try {
           const response = JSON.parse(data);
           if (res.statusCode === 201) {
-            // Poll for completion
-            pollPrediction(response.id, resolve, reject, 0, isVideo);
+            pollPrediction(response.id, resolve, reject, 0, isVideo, model, input, attempt);
           } else {
             reject(new Error(`API Error: ${res.statusCode} - ${data}`));
           }
@@ -64,11 +62,23 @@ async function callReplicateAPI(model, input, isVideo = false) {
 
     req.write(postData);
     req.end();
+  }).catch(async (err) => {
+    // Retry on E003 (service unavailable) or 500 transient errors
+    const isRetryable = err.message.includes('E003') || 
+                        err.message.includes('Service is currently unavailable') ||
+                        err.message.includes('currently unavailable');
+    if (isRetryable && attempt < maxRetries) {
+      const delay = retryDelays[attempt];
+      console.log(`⚠️ Replicate service busy (E003), retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${maxRetries})`);
+      await new Promise(r => setTimeout(r, delay));
+      return callReplicateAPI(model, input, isVideo, attempt + 1);
+    }
+    throw err;
   });
 }
 
 // Function to poll prediction status
-function pollPrediction(predictionId, resolve, reject, attempts = 0, isVideo = false) {
+function pollPrediction(predictionId, resolve, reject, attempts = 0, isVideo = false, model = null, input = null, apiAttempt = 0) {
   const maxAttempts = isVideo ? 240 : 60; // 20 minutes for video, 5 minutes for images
   
   if (attempts >= maxAttempts) {
@@ -99,11 +109,23 @@ function pollPrediction(predictionId, resolve, reject, attempts = 0, isVideo = f
         if (response.status === 'succeeded') {
           resolve(response.output);
         } else if (response.status === 'failed') {
-          reject(new Error(`Prediction failed: ${response.error}`));
+          const errMsg = response.error || '';
+          // Retry the whole prediction if Replicate says service unavailable (E003)
+          const isRetryable = errMsg.includes('E003') || errMsg.includes('Service is currently unavailable') || errMsg.includes('currently unavailable');
+          const maxApiRetries = 4;
+          if (isRetryable && model && input && apiAttempt < maxApiRetries) {
+            const delay = [5000, 10000, 20000, 40000][apiAttempt];
+            console.log(`⚠️ Prediction failed with E003, retrying in ${delay / 1000}s... (attempt ${apiAttempt + 1}/${maxApiRetries})`);
+            setTimeout(() => {
+              callReplicateAPI(model, input, isVideo, apiAttempt + 1).then(resolve).catch(reject);
+            }, delay);
+          } else {
+            reject(new Error(`Prediction failed: ${errMsg}`));
+          }
         } else if (response.status === 'processing' || response.status === 'starting') {
           // Still processing, poll again after 5 seconds
           setTimeout(() => {
-            pollPrediction(predictionId, resolve, reject, attempts + 1, isVideo);
+            pollPrediction(predictionId, resolve, reject, attempts + 1, isVideo, model, input, apiAttempt);
           }, 5000);
         } else {
           reject(new Error(`Unknown status: ${response.status}`));
@@ -319,41 +341,55 @@ CONTEXT (ignore this, use the VISUAL reference): ${prompt}`;
             negativePrompt = "completely new design, different garment, redesigned, reimagined, alternative version, new interpretation, different style, changed silhouette, modified structure, new outfit, different design, recreated design, similar design, inspired by, large logo, oversized logo, huge branding, massive graphics, enlarged text, bigger logo, logo enlargement";
           } else {
             // INITIAL GENERATION MODE: Create new sketch
-            let logoInstruction = "";
             if (uploadedLogoUrl) {
-              logoInstruction = ` 
+              fullPrompt = `🚨 LOGO PLACEMENT — TOP PRIORITY 🚨
+A logo/graphic is provided in image_input. Place it on the garment. The user does not need to ask — this is your creative responsibility.
 
-🎨 CRITICAL LOGO INSTRUCTION - READ CAREFULLY:
-- The reference image contains the actual brand logo/graphic provided by the user
-- You MUST use this EXACT logo image - copy it precisely as shown (colors, shape, design)
-- DO NOT create your own version, DO NOT draw text, DO NOT recreate the logo
-- DO NOT write brand names as text (no "Gucci", "Nike", "Supreme", etc. as text)
-- ONLY use the provided logo image exactly as it appears
-- Place it creatively and prominently on the garment: oversized back print, bold chest branding, sleeve graphics, shoulder placement, or asymmetric positioning
-- Make it look professionally printed, embroidered, or heat-pressed onto the fabric
-- Think Supreme, Off-White, Balenciaga style logo placement - bold, confident, fashion-forward
-- Integrate it into the fabric design as if it was manufactured that way`;
-            }
-            fullPrompt = `FASHION DESIGN SKETCH ONLY - NOT A FINISHED PRODUCT!
+LOGO PLACEMENT RULES:
+- Size: SMALL and refined — think Stone Island sleeve badge, Loro Piana chest crest, Lacoste croc, Polo pony, AMI heart — subtle luxury, not billboard
+- Position: your creative choice — left chest, sleeve arm, collar, cuff, subtle hem — wherever feels most natural for this garment
+- Copy it EXACTLY as provided (shape, colors, proportions) — do NOT redraw as text
+- It should feel like a premium brand finishing detail, factory-embroidered or woven in
 
-Create a hand-drawn fashion design sketch in professional technical illustration style:
-- Black and white pencil sketch on white paper
-- Clean line drawing with construction lines visible
-- Technical fashion croquis style (like what designers draw before making the garment)
-- Flat technical drawing showing garment details
-- ${garmentType || 'dress'} ${genderContext} ${featureDescription}, ${prompt}${logoInstruction}
+NOW DRAW THE GARMENT — Professional Fashion Design Sketch:
+You are a senior designer at a Paris/Milan fashion house. Create a beautiful, fashion-forward design sketch.
 
-CRITICAL: This must be a SKETCH/DRAWING, not a photograph or 3D render or finished product mockup!
-Style: Hand-drawn fashion illustration, pencil on paper, designer's original sketch, technical flat, black line art on white background
+Garment: ${garmentType || 'garment'} ${genderContext} ${featureDescription}
+Design direction: ${prompt}
 
-DO NOT create: photographs, 3D renders, product mockups, photorealistic images, finished garments on models`;
-            
-            // Strong negative prompt to ensure sketch style, not finished product
-            negativePrompt = "photograph, photo, 3D render, photorealistic, finished product, product mockup, model wearing clothes, realistic fabric, actual garment, finished clothing, styled photoshoot";
-            
-            // Add logo-specific restrictions if logo provided
-            if (uploadedLogoUrl) {
-              negativePrompt += ", text on clothing, written words, drawn letters, handwritten text, typography, text labels, brand name as text, recreated logo, redrawn logo, logo variations";
+SKETCH REQUIREMENTS:
+- Confident, expressive pencil line drawing on white paper — the kind you'd see in a Valentino or Bottega Veneta atelier
+- Beautifully proportioned silhouette with strong fashion attitude
+- Show all construction details: seams, topstitching, darts, closures, pockets — drawn with precision
+- Include subtle shading and texture indication to show fabric quality
+- Clean, sophisticated drape and fit — garment should look wearable and desirable
+- The sketch itself should look like high-end designer portfolio work
+
+Style reference: Central Saint Martins graduate portfolio, Vogue Paris illustration, atelier design sketch
+Output: Hand-drawn fashion illustration, pencil on white paper, professional black line art`;
+
+              negativePrompt = "photograph, photo, 3D render, photorealistic, finished product, product mockup, model, realistic fabric, childish drawing, amateur sketch, crude lines, messy, ugly proportions, unfashionable, frumpy, text labels, written words, brand names as text, recreated logo, oversized logo, huge logo, giant logo, massive logo, full back print, logo covering entire garment";
+            } else {
+              fullPrompt = `Professional Fashion Design Sketch — Atelier Quality
+
+You are a senior designer at a Paris/Milan fashion house. Create a beautiful, fashion-forward design sketch.
+
+Garment: ${garmentType || 'garment'} ${genderContext} ${featureDescription}
+Design direction: ${prompt}
+
+SKETCH REQUIREMENTS:
+- Confident, expressive pencil line drawing on white paper — the kind you'd see in a Valentino or Bottega Veneta atelier
+- Beautifully proportioned silhouette with strong fashion attitude and clear design point of view
+- Show all construction details with precision: seams, topstitching, darts, closures, pockets, button placement
+- Include subtle shading and cross-hatching to indicate fabric texture and drape
+- Clean, sophisticated fit — garment should look wearable, desirable, and genuinely fashionable
+- The sketch should feel like it belongs in a high-end designer portfolio or Vogue feature
+- Think about the overall look: what makes this garment special, interesting, covetable?
+
+Style reference: Central Saint Martins graduate portfolio, Maison Margiela technical sketches, Vogue Paris illustration, Rick Owens atelier drawings
+Output: Hand-drawn fashion illustration on white paper, expressive black pencil line art, professional designer sketch`;
+
+              negativePrompt = "photograph, photo, 3D render, photorealistic, finished product, product mockup, model wearing clothes, childish drawing, amateur sketch, crude lines, messy, ugly proportions, unfashionable, frumpy, boring design, generic garment, plain unremarkable clothing, text labels";
             }
           }
           
@@ -361,13 +397,12 @@ DO NOT create: photographs, 3D renders, product mockups, photorealistic images, 
           const imageInputs = [];
           if (baseImage) {
             imageInputs.push(baseImage);
-            // CRITICAL: In edit mode, DO NOT send the logo again!
-            // The logo is already in the baseImage, sending it again confuses the AI
-            // and makes it think it needs to re-place the logo (causing huge logos)
+            // In edit mode, DO NOT send the logo again — it's already baked into the base image
           } else {
-            // Only include logo for NEW designs, not edits
+            // NEW DESIGN: logo goes FIRST so the AI sees it as the primary reference
             if (uploadedLogoUrl) {
               imageInputs.push(uploadedLogoUrl);
+              console.log('🏷️  Logo placed as image_input[0] — AI will use it as primary reference');
             }
             if (data.sketchSvg) {
               imageInputs.push(data.sketchSvg);
@@ -466,37 +501,32 @@ DO NOT create: photographs, 3D renders, product mockups, photorealistic images, 
         let negativePrompt = "rainbow colors, multicolor, multiple colors, varied colors, colorful mix, color variety";
         
         if (previousColoredUrl) {
-          // REFINEMENT MODE: Keep exact same design, only change colors
-          fullPrompt = `THIS IS A COLOR/DETAIL EDIT REQUEST, NOT A NEW DESIGN REQUEST. You must COPY the reference garment image exactly and make ONLY this modification: "${prompt || "change the colors"}". 
+          fullPrompt = `COLOR REFINEMENT — MICRO EDIT ONLY. Copy the reference garment 99% exactly and make ONLY this change: "${prompt || "refine the colors"}".
 
-⚠️ CRITICAL COLOR RESTRICTION:
-- Use ONLY these exact colors: ${colorPrompt}
-- DO NOT use any other colors (no yellow, purple, green, orange, pink, blue unless specified)
-- DO NOT create rainbow or multicolor patterns
-- DO NOT add color variety
-- ONLY use: ${colorList}
+COLOR RULE: Use ONLY these colors: ${colorPrompt}. No other colors.
 
-STRICT RULES FOR ALL GARMENT TYPES (dresses, jackets, pants, skirts, shirts, coats, etc.):
-- Keep 100% identical: ALL design elements, silhouette, proportions, seam lines, construction details (necklines, sleeves, hems, waistlines, closures, pockets, collars, patterns, embellishments, etc.)
-- Keep the exact same base garment design and structure
-- Keep the same pose, angle, and body proportions
-- Only modify colors/details as mentioned: "${prompt || "change the colors"}"
-- Use ONLY colors: ${colorPrompt}
-- If user says "remove X", keep everything else 100% identical and only remove X
-- If user says "change X color", keep everything else 100% identical and only change X color
-- If user says "add X detail", keep everything else 100% identical and only add X detail
-- If user says "make X [adjective]", keep everything else 100% identical and only modify X
+DESIGN PRINCIPLE: Use darker shades on heavier pieces (jacket, coat, blazer, outer layer) and lighter tones on lighter elements (shirt, liner, undershirt, inner layers). This creates a natural, fashionable hierarchy.
 
-The reference image is your EXACT TEMPLATE. Copy it precisely and make the SMALLEST possible change to satisfy the request.
+KEEP IDENTICAL: silhouette, proportions, all design details, seams, pockets, closures, logos, embellishments — everything except what is explicitly asked to change.
 
-This is image-to-image refinement, not text-to-image generation. Professional fashion illustration style, no text or labels, clean background.`;
-          negativePrompt += ", different design, new garment, redesigned, altered silhouette, changed proportions, new style, alternative design, modified structure, different shape, different garment type, new dress, new jacket, new pants, new coat, new outfit, completely different";
+QUALITY: The result must look like a high-end fashion editorial product shot — rich color depth, beautiful fabric rendering, sophisticated color story. Colors should feel intentional and luxurious, not flat or washed out.`;
+          negativePrompt += ", different design, new garment, redesigned, altered silhouette, changed proportions, new style, alternative design, modified structure, flat colors, dull colors, washed out, muddy colors";
         } else {
-          // INITIAL COLORING MODE: Add colors to sketch
-          fullPrompt = `⚠️ STRICT COLOR RULE: Use ONLY these exact colors: ${colorPrompt}. DO NOT use any other colors. DO NOT create rainbow or multicolor patterns.
+          fullPrompt = `Fashion Colorization — Luxury Editorial Quality
 
-Add these specific colors to this professional fashion designer sketch: ${colorList}. Maintain the exact same design and proportions, keep the hand-drawn sketch aesthetic, professional fashion illustration style, no text or labels, clean background, ${prompt || ""}. Preserve the original sketch lines and structure while adding ONLY the specified colors (${colorPrompt}) to the garment.`;
-          negativePrompt += ", rainbow, multicolor pattern, color variety, colorful mix";
+You are colorizing a fashion design sketch for a high-end brand lookbook. Your job: make this garment look genuinely beautiful, desirable, and fashion-forward.
+
+COLOR PALETTE: Use ONLY ${colorPrompt}${colorList ? ` (${colorList})` : ''}. No other colors.
+
+COLORIZATION APPROACH:
+- Apply colors with depth and richness — show fabric weight, sheen, and texture through color variation
+- Use tonal shading within the specified palette to create dimension (highlights, midtones, shadows)
+- Make the garment look like it was photographed in a luxury fashion studio — saturated but sophisticated
+- Preserve all sketch construction lines so the design detail remains crisp and clear
+- ${prompt ? `Additional direction: ${prompt}` : "Make the color story feel cohesive and intentional — the kind of colorway you would see in a Zegna, Loro Piana, or JW Anderson collection"}
+
+OUTPUT: The garment should look like it belongs in a high-end fashion lookbook — beautiful color rendering, professional illustration quality, desirable and covetable.`;
+          negativePrompt += ", rainbow, multicolor, color variety, garish colors, clashing colors, neon, flat colors, dull colors, washed out, muddy, ugly color combination";
         }
 
         const input = {
@@ -542,7 +572,7 @@ Add these specific colors to this professional fashion designer sketch: ${colorL
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);
-        const { designUrl, modelType = "diverse fashion model", pose = "standing" } = data;
+        const { designUrl, modelType = "diverse fashion model", gender = "", pose = "standing" } = data;
 
         if (!designUrl) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -553,44 +583,50 @@ Add these specific colors to this professional fashion designer sketch: ${colorL
         console.log('Generating model photo from design:', designUrl.substring(0, 80) + '...');
         console.log('⚠️⚠️⚠️  CRITICAL: Model must wear the EXACT design from the reference image ⚠️⚠️⚠️');
 
-        const fullPrompt = `🚨 CRITICAL INSTRUCTION - READ CAREFULLY 🚨
+        const isMale = gender === 'men' || gender === 'male';
+        const isFemale = gender === 'women' || gender === 'female';
+        const genderInstruction = isMale
+          ? 'The model MUST be a MAN (male, masculine features, male body).'
+          : isFemale
+            ? 'The model MUST be a WOMAN (female, feminine features, female body).'
+            : '';
+        const genderNegative = isMale
+          ? 'woman, female, girl, feminine, she, her,'
+          : isFemale
+            ? 'man, male, boy, masculine, he, him,'
+            : '';
 
-YOUR TASK: Create a photorealistic fashion photograph where a model is wearing THE EXACT GARMENT shown in the reference image.
+        const fullPrompt = `High-Fashion Editorial Photograph — Reproduce Exact Garment from Reference
 
-📋 STEP-BY-STEP PROCESS:
-1. LOOK at the reference image - this shows the EXACT outfit design (it may be a sketch or colored design)
-2. MEMORIZE every detail: colors, patterns, logos, graphics, text, placement, style
-3. CREATE a professional photograph of a ${modelType} in ${pose} pose
-4. The model MUST be wearing THIS EXACT GARMENT - copy it pixel-perfect
-5. Studio lighting, clean background, high fashion editorial style
+${genderInstruction ? `MODEL: ${genderInstruction}` : ''}
 
-🔒 ABSOLUTE REQUIREMENTS - NO EXCEPTIONS:
-- SAME EXACT COLORS (if black hoodie in reference → black hoodie in photo)
-- SAME EXACT PATTERNS (if GG pattern on sleeves → GG pattern on sleeves in photo)
-- SAME EXACT LOGOS (if "GUCCI" text on chest → "GUCCI" text on chest in photo)
-- SAME EXACT GRAPHICS (any graphics/designs MUST appear identically)
-- SAME GARMENT TYPE (hoodie stays hoodie, dress stays dress, etc.)
-- SAME DESIGN ELEMENTS (pockets, zippers, stripes, ALL details preserved)
+Reproduce THE EXACT garment from the reference image onto a ${modelType}. Every color, texture, pattern, logo, and design detail must be faithfully recreated — no changes, no improvements, no interpretations.
 
-🚫 ABSOLUTELY FORBIDDEN:
-- Changing to a different outfit
-- Changing colors (NO blue jacket if reference shows black hoodie!)
-- Removing or altering logos/graphics/text
-- Creating a "similar" or "inspired by" design
-- Adding or removing design elements
-- ANY modification to the garment whatsoever
+GARMENT ACCURACY (non-negotiable):
+- Exact colors and colorway
+- Exact patterns at correct scale and placement
+- Logos at exact same size and position (small/tasteful if present in reference)
+- Same garment type, silhouette, cut, and construction
+- All details: pockets, zippers, buttons, seams, collars, hems — identical
+${isMale ? '- Male model — masculine features, male body proportions' : isFemale ? '- Female model — feminine features, female body proportions' : ''}
 
-✅ YOU ARE CREATING: A product photo for e-commerce - the model wears the EXACT item shown in reference
-❌ YOU ARE NOT: Creating a fashion editorial with a different interpretation
+PHOTOGRAPHY & STYLING (make it look incredible):
+- FULL BODY SHOT — model visible from head to toe. Face and head MUST be included — no cropping, no headless shots
+- Model: slim, high-fashion physique, relaxed confident posture, face visible and well-lit
+- Dramatic studio lighting: key light from 45° with soft fill, subtle rim light — the way Zegna or Brunello Cucinelli shoots their campaigns
+- Clean off-white seamless studio background
+- Sharp focus across the entire image — garment and model face both clearly visible
+- The model should look genuinely stylish and confident, like they belong in this garment
+- Retouched, polished, editorial quality — this is a luxury brand campaign hero shot
 
-Think: "I'm photographing this EXACT hoodie on a model for an online store - it must look IDENTICAL to the design shown"`;
+Think: "I'm the photographer for a luxury fashion house campaign — full body with face visible, garment is exact, model is perfect"`;
 
         const input = {
           prompt: fullPrompt,
           image_input: [designUrl],
           output_format: "jpg",
-          image_strength: 0.92, // VERY HIGH strength to force design preservation
-          negative_prompt: "different outfit, different garment, changed design, altered colors, modified patterns, blue jacket, blazer, suit, dress clothes, business attire, different clothing, new design, redesigned clothes, similar style, inspired by, alternative version, different interpretation, wrong garment type"
+          image_strength: 0.92,
+          negative_prompt: `${genderNegative} different outfit, different garment, changed design, altered colors, modified patterns, different clothing, new design, redesigned clothes, similar style, inspired by, alternative version, different interpretation, wrong garment type, unfashionable, frumpy, cheap looking, low quality, blurry, ugly, bad lighting, flat lighting, washed out, overexposed, cropped body, cropped head, headless, no face, face cut off, missing head, missing face, head cropped out, half body, torso only`
         };
 
         console.log('📸 Generating model photo with MAXIMUM design preservation (image_strength: 0.92)');
@@ -624,7 +660,7 @@ Think: "I'm photographing this EXACT hoodie on a model for an online store - it 
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);
-        const { modelPhotoUrl, garmentType, detailedFeatures } = data;
+        const { modelPhotoUrl, coloredUrl, garmentType, detailedFeatures } = data;
 
         if (!modelPhotoUrl) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -633,8 +669,9 @@ Think: "I'm photographing this EXACT hoodie on a model for an online store - it 
         }
 
         console.log('Generating 6 different angle views...');
+        if (coloredUrl) console.log('📋 Colored flat design provided as logo reference for angles');
 
-        // Create detailed description from features for different angle views
+        // Create detailed description from features
         const features = [];
         if (detailedFeatures) {
           if (detailedFeatures.fabric) features.push(`${detailedFeatures.fabric} fabric`);
@@ -646,41 +683,76 @@ Think: "I'm photographing this EXACT hoodie on a model for an online store - it 
           if (detailedFeatures.length) features.push(`${detailedFeatures.length} length`);
           if (detailedFeatures.fit) features.push(`${detailedFeatures.fit} fit`);
         }
-        const featureDescription = features.length > 0 ? `with ${features.join(', ')}` : '';
 
-        // Define 6 different angles
+        // Define 6 angles — each with which logo positions would be visible from that angle
         const angles = [
-          { name: 'front', prompt: 'Direct front view, facing camera, full body shot' },
-          { name: 'back', prompt: 'Back view, showing back details, full body shot' },
-          { name: 'left_side', prompt: 'Left side profile view, full body shot' },
-          { name: 'right_side', prompt: 'Right side profile view, full body shot' },
-          { name: 'three_quarter_front', prompt: 'Three-quarter front view, 45 degree angle, full body shot' },
-          { name: 'three_quarter_back', prompt: 'Three-quarter back view, 45 degree angle, full body shot' }
+          {
+            name: 'front',
+            prompt: 'Direct front view, facing camera, full body shot',
+            logoNote: 'Show any logos on the chest, front panels, or sleeves exactly as in the reference design'
+          },
+          {
+            name: 'back',
+            prompt: 'Back view, showing back details, full body shot',
+            logoNote: 'Show any logos on the back or rear sleeves exactly as in the reference design'
+          },
+          {
+            name: 'left_side',
+            prompt: 'Left side profile view, full body shot',
+            logoNote: 'Show any logos on the left sleeve or left chest panel exactly as in the reference design'
+          },
+          {
+            name: 'right_side',
+            prompt: 'Right side profile view, full body shot',
+            logoNote: 'Show any logos on the right sleeve or right chest panel exactly as in the reference design'
+          },
+          {
+            name: 'three_quarter_front',
+            prompt: 'Three-quarter front view, 45 degree angle, full body shot',
+            logoNote: 'Show any logos on the chest or sleeves exactly as in the reference design'
+          },
+          {
+            name: 'three_quarter_back',
+            prompt: 'Three-quarter back view, 45 degree angle, full body shot',
+            logoNote: 'Show any logos on the back or rear sleeves exactly as in the reference design'
+          }
         ];
 
         console.log('Generating 6 angle views in parallel...');
 
+        // Build image inputs: model photo first, colored flat design second (for logo reference)
+        const angleImageInputs = coloredUrl
+          ? [modelPhotoUrl, coloredUrl]
+          : [modelPhotoUrl];
+
         // Generate all 6 angles in parallel
         const anglePromises = angles.map(async (angle) => {
-          const fullPrompt = `⚠️ CRITICAL: Model wearing THE EXACT SAME OUTFIT from the reference image.
+          const fullPrompt = `360° Fashion Campaign Shoot — ${angle.prompt}
 
-${angle.prompt}
+Reproduce THE EXACT SAME OUTFIT from the reference images onto the same model. Nothing changes except the camera angle.
 
-RULES:
-- Same outfit, same colors, same patterns, same logos, same design - IDENTICAL to reference
-- Only change the camera angle/pose as specified: ${angle.prompt}
-- Clean white studio background, professional fashion photography
-- High-quality catalog style, detailed fabric textures
-- Professional lighting, no text or labels
+GARMENT (identical to reference):
+- Same garment, colors, patterns, textures
+- ${angle.logoNote} — logos at same small tasteful size, exact same position, do not enlarge or move them
+- Every construction detail, seam, pocket, closure — identical
 
-Think: "Same outfit, different angle for a 360° product view"`;
-          
+ANGLE: ${angle.prompt}
+
+PHOTOGRAPHY QUALITY (luxury brand campaign standard):
+- Dramatic studio lighting — key light, fill, rim light — professional fashion photography
+- Clean off-white seamless background
+- Full body visible head to toe, sharp focus across entire garment
+- Model looks confident and stylish — same model and physique as reference
+- This is a 360° luxury brand product campaign — every angle must look equally polished and beautiful
+
+Think: "Same model, same garment, same studio — I'm just walking around to shoot from a different angle"`;
+
           const input = {
             prompt: fullPrompt,
-            image_input: [modelPhotoUrl],
+            image_input: angleImageInputs,
             output_format: "jpg",
-            image_strength: 0.88, // Very high to preserve outfit
-            negative_prompt: "different outfit, changed design, altered colors, modified garment, new clothes"
+            image_strength: 0.90,
+            negative_prompt: "different outfit, changed design, altered colors, modified garment, new clothes, missing logo, removed logo, oversized logo, enlarged logo, moved logo, different logo position, unfashionable, cheap looking, low quality, blurry, bad lighting, flat lighting, cropped body, missing feet, missing head, ugly"
           };
 
           try {
@@ -739,7 +811,7 @@ Think: "Same outfit, different angle for a 360° product view"`;
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);
-        const { modelPhotoUrl, walkStyle = "confident ramp walk" } = data;
+        const { modelPhotoUrl, walkStyle = "confident ramp walk", gender = "", garmentType = "outfit", prompt = "", detailedFeatures = {} } = data;
 
         if (!modelPhotoUrl) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -756,29 +828,47 @@ Think: "Same outfit, different angle for a 360° product view"`;
           return;
         }
 
-        console.log('Generating ramp walk video with Kling-v2.1...');
+        // Build garment description from features
+        const featureParts = [];
+        if (detailedFeatures.fabric) featureParts.push(`${detailedFeatures.fabric} fabric`);
+        if (detailedFeatures.pattern && detailedFeatures.pattern !== 'None') featureParts.push(`${detailedFeatures.pattern} pattern`);
+        if (detailedFeatures.fit) featureParts.push(`${detailedFeatures.fit} fit`);
+        if (detailedFeatures.neckline) featureParts.push(`${detailedFeatures.neckline} neckline`);
+        if (detailedFeatures.sleeves) featureParts.push(`${detailedFeatures.sleeves} sleeves`);
+        if (detailedFeatures.length) featureParts.push(`${detailedFeatures.length} length`);
+        const featureDesc = featureParts.length > 0 ? `, ${featureParts.join(', ')}` : '';
 
-        const fullPrompt = `Single professional fashion model walking confidently down a runway ramp, ${walkStyle}, one model only, model starts at the back of the runway and walks forward towards camera, smooth fluid motion, elegant confident stride, cameras flashing from audience, professional runway lighting, fashion week atmosphere, full body shot throughout the walk, high fashion presentation, cinematic quality, luxury fashion show environment, seamless single take video, solo model performance`;
+        const isMale = gender?.toLowerCase() === 'men' || gender?.toLowerCase() === 'male';
+        const isFemale = gender?.toLowerCase() === 'women' || gender?.toLowerCase() === 'female';
+        const modelDesc = isMale ? 'a male fashion model' : isFemale ? 'a female fashion model' : 'a fashion model';
+        const garmentDesc = prompt ? `${garmentType || 'outfit'} - ${prompt}${featureDesc}` : `${garmentType || 'outfit'}${featureDesc}`;
+
+        console.log('Generating ramp walk video with Google Veo 3.1 (image-to-video)...');
+
+        const fullPrompt = `Dolly shot (camera motion) of ${modelDesc} (subject) wearing THE EXACT SAME OUTFIT from the reference image — same colors, same garment, same design — walking confidently down a luxury fashion week runway (context). Full body visible at all times. Model starts far and walks toward camera with powerful elegant stride. Spotlights from above, audience seated on both sides with cameras flashing, dark atmospheric runway background (style). Solo model only, cinematic quality, high-end fashion show.`;
 
         const input = {
-          mode: "pro",
           prompt: fullPrompt,
-          duration: 10,
-          start_image: modelPhotoUrl,
-          negative_prompt: "static image, multiple views, composite video, cuts, transitions, blurry, low quality, multiple models, duplicate models, clones, two models, several models, group of models, other people on runway"
+          image: modelPhotoUrl,
+          duration: 8,
+          aspect_ratio: "16:9",
+          resolution: "1080p",
+          generate_audio: true,
+          negative_prompt: "different outfit, changed clothes, altered colors, new garment, different design, multiple models, cut, transition, static, blurry, low quality, cropped head, cropped feet"
         };
 
-        console.log('Using Kling-v2.1 for ramp walk video generation');
-        const output = await callReplicateAPI('kwaivgi/kling-v2.1', input, true); // true for video
+        console.log('Using Google Veo 3.1 (image-to-video) for ramp walk generation');
+        console.log('Model photo being used as reference:', modelPhotoUrl.substring(0, 80) + '...');
+        const output = await callReplicateAPI('google/veo-3.1', input, true); // true for video
         
-        // Kling-v2.1 returns video URL directly or in output array
+        // Veo 3.1 returns video URL directly or in output array
         const videoUrl = Array.isArray(output) ? output[0] : output;
         
         if (!videoUrl) {
-          throw new Error('No video URL returned from Kling-v2.1 API');
+          throw new Error('No video URL returned from Google Veo 3.1 API');
         }
 
-        console.log('Ramp walk video generated successfully:', videoUrl);
+        console.log('Ramp walk video generated successfully with Veo 3.1:', videoUrl);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
@@ -791,7 +881,7 @@ Think: "Same outfit, different angle for a 360° product view"`;
         console.error('Error generating ramp walk video:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: `Ramp walk video generation failed: ${error.message}`,
+          error: `Ramp walk video generation failed (Veo 3.1): ${error.message}`,
           success: false 
         }));
       }

@@ -233,30 +233,6 @@ export default function HomePage() {
       </section>
 
 
-      {/* Footer */}
-      <footer className="absolute bottom-0 left-0 right-0 z-40 bg-black/20 backdrop-blur-md py-4 border-t border-white/10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-white/90 text-sm">
-            Made with ❤️ by{' '}
-            <a href="https://silin.ca" target="_blank" rel="noopener noreferrer" className="text-white hover:underline font-medium">
-              Silin
-            </a>
-            ,{' '}
-            <a href="https://sethisarthak.com" target="_blank" rel="noopener noreferrer" className="text-white hover:underline font-medium">
-              Sarthak
-            </a>
-            ,{' '}
-            <a href="https://github.com/shauraya-mohan" target="_blank" rel="noopener noreferrer" className="text-white hover:underline font-medium">
-              Shauraya
-            </a>
-            {' '}and{' '}
-            <a href="https://github.com/meharpruthi" target="_blank" rel="noopener noreferrer" className="text-white hover:underline font-medium">
-              Mehar
-            </a>
-            .
-          </p>
-        </div>
-      </footer>
     </div>
   );
 }
