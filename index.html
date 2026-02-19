@@ -24,6 +24,24 @@
 
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <!-- URL polyfill: fixes "Failed to construct URL" errors when opened via file:// -->
+    <script>
+      (function () {
+        var _URL = window.URL;
+        window.URL = function (url, base) {
+          try { return new _URL(url, base); } catch (e) {
+            try {
+              var b = (base && typeof base === 'string' && base.indexOf('file:') === 0)
+                ? 'http://localhost/' : (base || 'http://localhost/');
+              return new _URL(url || 'http://localhost/', b);
+            } catch (e2) { return new _URL('http://localhost/'); }
+          }
+        };
+        window.URL.prototype = _URL.prototype;
+        window.URL.createObjectURL = _URL.createObjectURL;
+        window.URL.revokeObjectURL = _URL.revokeObjectURL;
+      })();
+    </script>
+    <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>
