@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Home, FolderOpen } from "lucide-react";
 import { saveToPortfolio } from "@/pages/Portfolio";
 
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
+
 type DesignStep = 'prompt' | 'sketch' | 'colors' | 'model' | '3d' | 'runway';
 
 interface DesignState {
@@ -176,7 +178,7 @@ export default function FashionDesignTool() {
     }
     
     try {
-      const response = await fetch('http://localhost:3001/api/generate-sketch', {
+      const response = await fetch(`${API_BASE}/api/generate-sketch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -257,7 +259,7 @@ export default function FashionDesignTool() {
     setCurrentOperation(isRefinement ? "Applying your color changes..." : (previousUrl ? "Refining colors..." : "Adding colors to design..."));
     
     try {
-      const response = await fetch('http://localhost:3001/api/add-colors', {
+      const response = await fetch(`${API_BASE}/api/add-colors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -330,7 +332,7 @@ export default function FashionDesignTool() {
           ? 'female woman fashion model'
           : 'diverse fashion model';
 
-      const response = await fetch('http://localhost:3001/api/generate-model', {
+      const response = await fetch(`${API_BASE}/api/generate-model`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -370,7 +372,7 @@ export default function FashionDesignTool() {
     setCurrentOperation("Generating 6 different angle views... This will take a few minutes.");
     
     try {
-      const response = await fetch('http://localhost:3001/api/generate-angles', {
+      const response = await fetch(`${API_BASE}/api/generate-angles`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -414,7 +416,7 @@ export default function FashionDesignTool() {
     setCurrentOperation("Creating ramp walk video... (this may take a few minutes)");
     
     try {
-      const response = await fetch('http://localhost:3001/api/generate-ramp-walk', {
+      const response = await fetch(`${API_BASE}/api/generate-ramp-walk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
