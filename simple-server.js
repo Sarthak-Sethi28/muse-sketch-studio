@@ -23,6 +23,15 @@ if (process.env.REPLICATE_API_TOKEN) envVars.REPLICATE_API_TOKEN = process.env.R
 if (process.env.MODEL_ID) envVars.MODEL_ID = process.env.MODEL_ID;
 if (process.env.PROMPT_TEMPLATE) envVars.PROMPT_TEMPLATE = process.env.PROMPT_TEMPLATE;
 
+// Sanitize errors for API responses — never expose E005, sensitive, or raw technical errors to users
+function sanitizeErrorForUser(err) {
+  const msg = (err && err.message) ? err.message : String(err);
+  if (/E005|sensitive|flagged|content moderation/i.test(msg)) return 'This content could not be processed. Please try a different model photo or design.';
+  if (/E003|unavailable|service busy/i.test(msg)) return 'Service is busy. Please try again in a moment.';
+  if (/timeout|timed out/i.test(msg)) return 'Request timed out. Please try again.';
+  return msg;
+}
+
 // Function to make Replicate API calls with retry logic for E003 service unavailable
 async function callReplicateAPI(model, input, isVideo = false, attempt = 0) {
   const maxRetries = 4;
@@ -208,7 +217,12 @@ async function getReplicatePredictionStatus(predictionId) {
             const videoUrl = Array.isArray(output) ? output[0] : output;
             resolve({ status: 'succeeded', videoUrl, success: true });
           } else if (response.status === 'failed') {
-            resolve({ status: 'failed', error: response.error || 'Unknown error', success: false });
+            const rawErr = response.error || 'Unknown error';
+            // Never expose E005, sensitive, or raw moderation errors to users
+            const friendlyErr = /E005|sensitive|flagged|content moderation/i.test(rawErr)
+              ? 'This content could not be processed. Please try a different model photo.'
+              : rawErr;
+            resolve({ status: 'failed', error: friendlyErr, success: false });
           } else {
             resolve({ status: response.status || 'processing', success: false });
           }
@@ -538,7 +552,7 @@ Output: Hand-drawn fashion illustration on white paper, expressive black pencil 
           console.error('Error generating sketch:', error);
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ 
-            error: `Generation failed: ${error.message}`,
+            error: sanitizeErrorForUser(error),
             success: false 
           }));
         }
@@ -640,7 +654,7 @@ OUTPUT: The garment should look like it belongs in a high-end fashion lookbook �
         console.error('Error adding colors:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: `Color generation failed: ${error.message}`,
+          error: sanitizeErrorForUser(error),
           success: false 
         }));
       }
@@ -728,7 +742,7 @@ Think: "I'm the photographer for a luxury fashion house campaign — full body w
         console.error('Error generating model photo:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: `Model generation failed: ${error.message}`,
+          error: sanitizeErrorForUser(error),
           success: false 
         }));
       }
@@ -878,7 +892,7 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
         console.error('Input data was:', JSON.stringify(data, null, 2));
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: `Different angle view generation failed: ${error.message}`,
+          error: sanitizeErrorForUser(error),
           success: false,
           details: error.stack
         }));
@@ -911,11 +925,9 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
           return;
         }
 
-        const isMale = gender?.toLowerCase() === 'men' || gender?.toLowerCase() === 'male';
-        const isFemale = gender?.toLowerCase() === 'women' || gender?.toLowerCase() === 'female';
-        const modelDesc = isMale ? 'a male fashion model' : isFemale ? 'a female fashion model' : 'a fashion model';
-
-        const fullPrompt = `Dolly shot (camera motion) of ${modelDesc} (subject) wearing THE EXACT SAME OUTFIT from the reference image — same colors, same garment, same design — walking confidently down a luxury fashion week runway (context). Full body visible at all times. Model starts far and walks toward camera with powerful elegant stride. Spotlights from above, audience seated on both sides with cameras flashing, dark atmospheric runway background (style). Solo model only, cinematic quality, high-end fashion show.`;
+        // Use neutral language to avoid E005 (sensitive content) — Veo 3.1 content moderation
+        // Model must walk TOWARD camera (not from behind), head natural and forward — no exaggerated turns
+        const fullPrompt = `Editorial fashion video: A professional model wearing the exact same outfit from the reference image walks TOWARD the camera down a luxury fashion runway. She starts at the far end and walks directly toward the viewer with a confident, natural stride. Face and body always facing forward toward camera — head held straight, natural posture, no exaggerated head turns. Full-length shot from head to toe. Dolly shot, camera slowly pulls back as she approaches. Spotlights from above, audience on both sides, dark runway background. Solo model, cinematic quality, high-end fashion show, commercial editorial style.`;
 
         const input = {
           prompt: fullPrompt,
@@ -923,8 +935,8 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
           duration: 8,
           aspect_ratio: "16:9",
           resolution: "1080p",
-          generate_audio: true,
-          negative_prompt: "different outfit, changed clothes, altered colors, new garment, different design, multiple models, cut, transition, static, blurry, low quality, cropped head, cropped feet"
+          generate_audio: false, // Disabled — can trigger E005 content moderation
+          negative_prompt: "walking away, back to camera, model turning around, exaggerated head turn, unnatural movement, witch-like, creepy, different outfit, changed clothes, altered colors, new garment, different design, multiple models, cut, transition, static, blurry, low quality, cropped head, cropped feet"
         };
 
         console.log('Starting ramp walk video (async) — Veo 3.1');
@@ -942,7 +954,7 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
         console.error('Error starting ramp walk video:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: `Failed to start video: ${error.message}`,
+          error: sanitizeErrorForUser(error),
           success: false 
         }));
       }
@@ -968,7 +980,7 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
       console.error('Error checking ramp walk status:', error);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ 
-        error: error.message,
+        error: sanitizeErrorForUser(error),
         success: false,
         status: 'error'
       }));

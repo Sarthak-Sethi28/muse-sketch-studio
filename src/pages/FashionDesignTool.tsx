@@ -509,17 +509,37 @@ export default function FashionDesignTool() {
 
   const handleApiError = (error: unknown, operation: string) => {
     console.error(`${operation} error:`, error);
-    
-    if (error instanceof Error && error.message.includes('Failed to fetch')) {
+    const msg = error instanceof Error ? error.message : "Unknown error occurred";
+
+    // User-friendly messages — never show raw E005, sensitive, or technical errors
+    if (msg.includes('Failed to fetch') || msg.includes('network') || msg.includes('connection')) {
       toast({
-        title: "Server not running",
-        description: "Please start the API server with 'npm run server'",
+        title: "Connection issue",
+        description: "Could not reach the server. Please check your connection and try again.",
+        variant: "destructive"
+      });
+    } else if (msg.includes('E005') || /sensitive|flagged|content moderation/i.test(msg)) {
+      toast({
+        title: "Couldn't generate this one",
+        description: "Please try a different model photo or design. Our AI has strict quality guidelines.",
+        variant: "destructive"
+      });
+    } else if (msg.includes('timeout') || msg.includes('timed out')) {
+      toast({
+        title: "Taking too long",
+        description: "Generation is taking longer than usual. Please try again in a few minutes.",
+        variant: "destructive"
+      });
+    } else if (msg.includes('E003') || msg.includes('unavailable')) {
+      toast({
+        title: "Service busy",
+        description: "Our AI is a bit busy right now. Please try again in a moment.",
         variant: "destructive"
       });
     } else {
       toast({
-        title: `${operation} failed`,
-        description: error instanceof Error ? error.message : "Unknown error occurred",
+        title: "Something went wrong",
+        description: "Please try again. If it keeps failing, try a different design or photo.",
         variant: "destructive"
       });
     }
