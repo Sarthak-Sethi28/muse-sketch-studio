@@ -20,6 +20,8 @@ export default {
         'allura': ['Allura', 'cursive'],
         'great-vibes': ['Great Vibes', 'cursive'],
         'roboto': ['Roboto', 'sans-serif'],
+        'cormorant': ['Cormorant Garamond', 'serif'],
+        'syne': ['Syne', 'sans-serif'],
       },
       colors: {
         'surface': {

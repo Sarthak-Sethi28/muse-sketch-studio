@@ -43,6 +43,7 @@ interface DesignState {
   currentStep: DesignStep;
   previousSketchUrl: string | null; // For edit history
   previousColoredUrl: string | null; // For edit history
+  cameFromSketchEdit: boolean; // True when returning to colors after edit sketch
   uploadedImageUrl: string | null; // User uploaded image
   uploadedLogoUrl: string | null; // User uploaded logo
   useUploadedImage: boolean; // Flag to use uploaded image instead of generation
@@ -81,6 +82,7 @@ export default function FashionDesignTool() {
     currentStep: 'prompt',
     previousSketchUrl: null,
     previousColoredUrl: null,
+    cameFromSketchEdit: false,
     uploadedImageUrl: null,
     uploadedLogoUrl: null,
     useUploadedImage: false,
@@ -211,7 +213,8 @@ export default function FashionDesignTool() {
               modelUrl: null,
               threeDUrl: null,
               runwayUrl: null,
-              angleViews: undefined
+              angleViews: undefined,
+              cameFromSketchEdit: true // Show "Add or change colors?" instead of starting from scratch
             } : {})
           };
           console.log('✅ State updated - Logo still present?', !!newState.uploadedLogoUrl);
@@ -259,6 +262,12 @@ export default function FashionDesignTool() {
     setCurrentOperation(isRefinement ? "Applying your color changes..." : (previousUrl ? "Refining colors..." : "Adding colors to design..."));
     
     try {
+      // When refining colors: preserve colors NOT mentioned in the prompt (user only wants to change mentioned ones)
+      const promptLower = (promptToSend || '').toLowerCase();
+      const preserveColors = isRefinement && designState.selectedColors.length > 0
+        ? designState.selectedColors.filter(c => !promptLower.includes(c.toLowerCase()))
+        : undefined;
+
       const response = await fetch(`${API_BASE}/api/add-colors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -266,7 +275,8 @@ export default function FashionDesignTool() {
           sketchUrl: designState.sketchUrl,
           colors: designState.selectedColors,
           prompt: promptToSend,
-          previousColoredUrl: previousUrl
+          previousColoredUrl: previousUrl,
+          preserveColors: preserveColors?.length ? preserveColors : undefined
         })
       });
 
@@ -278,6 +288,7 @@ export default function FashionDesignTool() {
           previousColoredUrl: prev.coloredUrl,
           coloredUrl: data.imageUrl,
           currentStep: 'model',
+          cameFromSketchEdit: false, // Clear after colors applied
           // If refinement: clear downstream outputs so user regenerates model + angles + runway
           ...(isRefinement ? {
             modelUrl: null,
@@ -408,15 +419,15 @@ export default function FashionDesignTool() {
     }
   };
 
-  // Step 5: Generate Ramp Walk Video
+  // Step 5: Generate Ramp Walk Video (async polling — avoids Render 30s timeout)
   const handleGenerateRunway = async () => {
     if (!designState.modelUrl) return;
 
     setIsGenerating(true);
-    setCurrentOperation("Creating ramp walk video... (this may take a few minutes)");
+    setCurrentOperation("Starting video generation...");
     
     try {
-      const response = await fetch(`${API_BASE}/api/generate-ramp-walk`, {
+      const startRes = await fetch(`${API_BASE}/api/generate-ramp-walk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -429,21 +440,68 @@ export default function FashionDesignTool() {
         })
       });
 
-      const data = await response.json();
-      
-      if (data.success && data.videoUrl) {
-        setDesignState(prev => ({
-          ...prev,
-          runwayUrl: data.videoUrl
-        }));
-        syncPortfolio({ runwayUrl: data.videoUrl }, savedDesignIdRef.current);
-        toast({ title: "Runway video created!", description: "Your fashion show is ready!" });
-      } else {
-        throw new Error(data.error || 'Failed to generate runway video');
+      const startData = await startRes.json();
+      if (!startData.success || !startData.jobId) {
+        throw new Error(startData.error || 'Failed to start video generation');
       }
+
+      const jobId = startData.jobId;
+      setCurrentOperation("Creating ramp walk video... (usually ~3 minutes)");
+
+      const pollInterval = 30000; // 30 seconds — video typically ready in ~3 min (6 polls)
+      const maxAttempts = 20; // ~10 min max
+      const maxPollRetries = 3; // Retry transient fetch failures
+      let attempts = 0;
+
+      const poll = async (pollRetry = 0): Promise<void> => {
+        attempts++;
+        const statusMsg = attempts <= 6
+          ? `Creating ramp walk video... (usually ~3 min)`
+          : `Still processing... (checking every 30 sec)`;
+        setCurrentOperation(statusMsg);
+
+        try {
+          const statusRes = await fetch(`${API_BASE}/api/ramp-walk-status?jobId=${encodeURIComponent(jobId)}`);
+          let statusData: { status?: string; videoUrl?: string; error?: string };
+          try {
+            statusData = await statusRes.json();
+          } catch {
+            throw new Error('Invalid response from server');
+          }
+
+          if (statusData.status === 'succeeded' && statusData.videoUrl) {
+            setDesignState(prev => ({ ...prev, runwayUrl: statusData.videoUrl }));
+            syncPortfolio({ runwayUrl: statusData.videoUrl }, savedDesignIdRef.current);
+            toast({ title: "Runway video created!", description: "Your fashion show is ready!" });
+            setIsGenerating(false);
+            setCurrentOperation("");
+            return;
+          }
+          if (statusData.status === 'failed') {
+            throw new Error(statusData.error || 'Video generation failed');
+          }
+          if (attempts >= maxAttempts) {
+            throw new Error('Video generation is taking longer than usual. You can check back later or try again.');
+          }
+          setTimeout(() => poll(0), pollInterval);
+        } catch (err) {
+          // Retry on transient fetch errors (network blip, connection closed, ERR_CONNECTION_CLOSED)
+          const isRetryable = err instanceof TypeError ||
+            (err instanceof Error && /fetch|network|connection/i.test(err.message));
+          if (pollRetry < maxPollRetries && isRetryable) {
+            setCurrentOperation(`Checking status... (retry ${pollRetry + 1}/${maxPollRetries})`);
+            setTimeout(() => poll(pollRetry + 1), 5000);
+          } else {
+            handleApiError(err, "runway video generation");
+            setIsGenerating(false);
+            setCurrentOperation("");
+          }
+        }
+      };
+
+      await poll(0);
     } catch (error) {
       handleApiError(error, "runway video generation");
-    } finally {
       setIsGenerating(false);
       setCurrentOperation("");
     }

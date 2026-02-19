@@ -42,6 +42,7 @@ interface DesignState {
   currentStep: DesignStep;
   previousSketchUrl: string | null; // For edit history
   previousColoredUrl: string | null; // For edit history
+  cameFromSketchEdit?: boolean; // True when returning to colors after edit sketch
   uploadedImageUrl: string | null; // User uploaded image
   uploadedLogoUrl: string | null; // User uploaded logo
   useUploadedImage: boolean; // Flag to use uploaded image instead of generation
@@ -728,11 +729,18 @@ export function FashionPipeline({
           {/* Step 2: Color Selection */}
           {designState.currentStep === 'colors' && (
             <div className="space-y-4">
-              <h3 className="text-sm font-medium text-text-primary">Step 2: Choose Colors</h3>
+              <h3 className="text-sm font-medium text-text-primary">
+                {designState.cameFromSketchEdit ? "Step 2: Add or Change Colors?" : "Step 2: Choose Colors"}
+              </h3>
+              {designState.cameFromSketchEdit && (
+                <p className="text-sm text-text-secondary">
+                  Your sketch was updated. Apply the same colors or change them below.
+                </p>
+              )}
               
               <div className="space-y-3">
                 <label className="text-sm font-medium text-text-primary">
-                  Select colors for your design
+                  {designState.cameFromSketchEdit ? "Keep same colors or select different ones" : "Select colors for your design"}
                 </label>
                 <div className="grid grid-cols-2 gap-3">
                   {colorOptions.map(color => (
@@ -789,7 +797,7 @@ export function FashionPipeline({
                 className="w-full"
               >
                 <Palette className="h-4 w-4 mr-2" />
-                Add Colors
+                {designState.cameFromSketchEdit ? "Apply Colors" : "Add Colors"}
               </Button>
 
               {/* Save to Portfolio */}
@@ -1011,7 +1019,7 @@ export function FashionPipeline({
             <div className="space-y-4">
               <h3 className="text-sm font-medium text-text-primary">Step 5: Create Ramp Walk Video</h3>
               <p className="text-sm text-text-secondary">
-                Generate a professional 10-second ramp walk video with cameras flashing. Processing takes 5-20 minutes.
+                Generate a professional 10-second ramp walk video with cameras flashing. Usually ready in ~3 minutes.
               </p>
 
               <Button 

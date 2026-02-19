@@ -147,6 +147,81 @@ function pollPrediction(predictionId, resolve, reject, attempts = 0, isVideo = f
   req.end();
 }
 
+// Create Replicate prediction and return ID immediately (no polling)
+async function createReplicatePrediction(model, input) {
+  const postData = JSON.stringify({ input });
+  const options = {
+    hostname: 'api.replicate.com',
+    port: 443,
+    path: `/v1/models/${model}/predictions`,
+    method: 'POST',
+    headers: {
+      'Authorization': `Token ${envVars.REPLICATE_API_TOKEN}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(postData)
+    }
+  };
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (res.statusCode === 201 && response.id) {
+            resolve(response.id);
+          } else {
+            reject(new Error(`API Error: ${res.statusCode} - ${data}`));
+          }
+        } catch (error) {
+          reject(new Error(`Parse Error: ${error.message}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+// Get Replicate prediction status (for polling)
+async function getReplicatePredictionStatus(predictionId) {
+  const options = {
+    hostname: 'api.replicate.com',
+    port: 443,
+    path: `/v1/predictions/${predictionId}`,
+    method: 'GET',
+    headers: {
+      'Authorization': `Token ${envVars.REPLICATE_API_TOKEN}`,
+      'Content-Type': 'application/json'
+    }
+  };
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          if (response.status === 'succeeded') {
+            const output = response.output;
+            const videoUrl = Array.isArray(output) ? output[0] : output;
+            resolve({ status: 'succeeded', videoUrl, success: true });
+          } else if (response.status === 'failed') {
+            resolve({ status: 'failed', error: response.error || 'Unknown error', success: false });
+          } else {
+            resolve({ status: response.status || 'processing', success: false });
+          }
+        } catch (error) {
+          reject(new Error(`Parse Error: ${error.message}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -485,7 +560,7 @@ Output: Hand-drawn fashion illustration on white paper, expressive black pencil 
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);
-        const { sketchUrl, colors, prompt, previousColoredUrl } = data;
+        const { sketchUrl, colors, prompt, previousColoredUrl, preserveColors } = data;
 
         if (!sketchUrl) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -505,9 +580,12 @@ Output: Hand-drawn fashion illustration on white paper, expressive black pencil 
         let negativePrompt = "rainbow colors, multicolor, multiple colors, varied colors, colorful mix, color variety";
         
         if (previousColoredUrl) {
+          const preserveInstruction = preserveColors && preserveColors.length > 0
+            ? `\n\nCRITICAL — PRESERVE UNCHANGED: Keep these colors exactly as they appear in the reference (do not alter them): ${preserveColors.join(', ')}. Only change the colors explicitly mentioned in the user's instruction.`
+            : '\n\nPRESERVE: Only change the colors explicitly mentioned in the user\'s instruction. All other colors must remain exactly as in the reference.';
           fullPrompt = `COLOR REFINEMENT — MICRO EDIT ONLY. Copy the reference garment 99% exactly and make ONLY this change: "${prompt || "refine the colors"}".
 
-COLOR RULE: Use ONLY these colors: ${colorPrompt}. No other colors.
+COLOR RULE: Use ONLY these colors: ${colorPrompt}. No other colors.${preserveInstruction}
 
 DESIGN PRINCIPLE: Use darker shades on heavier pieces (jacket, coat, blazer, outer layer) and lighter tones on lighter elements (shirt, liner, undershirt, inner layers). This creates a natural, fashionable hierarchy.
 
@@ -809,6 +887,7 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
     return;
   }
 
+  // Create Replicate prediction without polling (returns prediction ID immediately)
   if (req.method === 'POST' && req.url === '/api/generate-ramp-walk') {
     let body = '';
     req.on('data', chunk => { body += chunk.toString(); });
@@ -832,22 +911,9 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
           return;
         }
 
-        // Build garment description from features
-        const featureParts = [];
-        if (detailedFeatures.fabric) featureParts.push(`${detailedFeatures.fabric} fabric`);
-        if (detailedFeatures.pattern && detailedFeatures.pattern !== 'None') featureParts.push(`${detailedFeatures.pattern} pattern`);
-        if (detailedFeatures.fit) featureParts.push(`${detailedFeatures.fit} fit`);
-        if (detailedFeatures.neckline) featureParts.push(`${detailedFeatures.neckline} neckline`);
-        if (detailedFeatures.sleeves) featureParts.push(`${detailedFeatures.sleeves} sleeves`);
-        if (detailedFeatures.length) featureParts.push(`${detailedFeatures.length} length`);
-        const featureDesc = featureParts.length > 0 ? `, ${featureParts.join(', ')}` : '';
-
         const isMale = gender?.toLowerCase() === 'men' || gender?.toLowerCase() === 'male';
         const isFemale = gender?.toLowerCase() === 'women' || gender?.toLowerCase() === 'female';
         const modelDesc = isMale ? 'a male fashion model' : isFemale ? 'a female fashion model' : 'a fashion model';
-        const garmentDesc = prompt ? `${garmentType || 'outfit'} - ${prompt}${featureDesc}` : `${garmentType || 'outfit'}${featureDesc}`;
-
-        console.log('Generating ramp walk video with Google Veo 3.1 (image-to-video)...');
 
         const fullPrompt = `Dolly shot (camera motion) of ${modelDesc} (subject) wearing THE EXACT SAME OUTFIT from the reference image — same colors, same garment, same design — walking confidently down a luxury fashion week runway (context). Full body visible at all times. Model starts far and walks toward camera with powerful elegant stride. Spotlights from above, audience seated on both sides with cameras flashing, dark atmospheric runway background (style). Solo model only, cinematic quality, high-end fashion show.`;
 
@@ -861,35 +927,52 @@ Think: "Same model, same garment, same studio — I'm just walking around to sho
           negative_prompt: "different outfit, changed clothes, altered colors, new garment, different design, multiple models, cut, transition, static, blurry, low quality, cropped head, cropped feet"
         };
 
-        console.log('Using Google Veo 3.1 (image-to-video) for ramp walk generation');
-        console.log('Model photo being used as reference:', modelPhotoUrl.substring(0, 80) + '...');
-        const output = await callReplicateAPI('google/veo-3.1', input, true); // true for video
-        
-        // Veo 3.1 returns video URL directly or in output array
-        const videoUrl = Array.isArray(output) ? output[0] : output;
-        
-        if (!videoUrl) {
-          throw new Error('No video URL returned from Google Veo 3.1 API');
-        }
-
-        console.log('Ramp walk video generated successfully with Veo 3.1:', videoUrl);
+        console.log('Starting ramp walk video (async) — Veo 3.1');
+        const predictionId = await createReplicatePrediction('google/veo-3.1', input);
+        console.log('Prediction started:', predictionId);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          videoUrl: videoUrl,
+          jobId: predictionId,
           success: true,
-          step: 'ramp-walk'
+          message: 'Video generation started. Poll /api/ramp-walk-status?jobId=' + predictionId
         }));
 
       } catch (error) {
-        console.error('Error generating ramp walk video:', error);
+        console.error('Error starting ramp walk video:', error);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ 
-          error: `Ramp walk video generation failed (Veo 3.1): ${error.message}`,
+          error: `Failed to start video: ${error.message}`,
           success: false 
         }));
       }
     });
+    return;
+  }
+
+  // Poll status of ramp walk video (avoids long-running HTTP connections that timeout on Render)
+  if (req.method === 'GET' && req.url && req.url.startsWith('/api/ramp-walk-status')) {
+    const url = new URL(req.url, 'http://localhost');
+    const jobId = url.searchParams.get('jobId');
+    if (!jobId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'jobId required', success: false }));
+      return;
+    }
+
+    try {
+      const result = await getReplicatePredictionStatus(jobId);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (error) {
+      console.error('Error checking ramp walk status:', error);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ 
+        error: error.message,
+        success: false,
+        status: 'error'
+      }));
+    }
     return;
   }
 
