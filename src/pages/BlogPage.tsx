@@ -274,12 +274,7 @@ export default function BlogPage() {
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:2, background:"rgba(255,255,255,0.04)", marginBottom:2 }}>
               {/* Visual */}
               <div style={{ background:`linear-gradient(135deg, ${filtered[0].accent}22, ${filtered[0].accent}08)`, minHeight:360, display:"flex", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden" }}>
-                <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:180, fontWeight:700, color:filtered[0].accent, opacity:0.08, lineHeight:1, userSelect:"none" }}>01</div>
-                <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
-                  <div style={{ width:120, height:120, border:`1px solid ${filtered[0].accent}44`, borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center" }}>
-                    <div style={{ fontSize:48 }}>✍️</div>
-                  </div>
-                </div>
+                <div style={{ fontFamily:"'Cormorant Garamond', serif", fontSize:180, fontWeight:700, color:filtered[0].accent, opacity:0.25, lineHeight:1, userSelect:"none" }}>01</div>
               </div>
               {/* Content */}
               <div style={{ padding:"56px 52px", background:"rgba(255,255,255,0.025)" }}>
