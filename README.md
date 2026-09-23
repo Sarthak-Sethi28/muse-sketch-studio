@@ -2,6 +2,8 @@
 
 **AI-Powered Fashion Design Pipeline** - Create professional fashion designs from concept to runway
 
+Built collaboratively by **Sarthak Sethi** and **[Silin](https://github.com/Silin144)**.
+
 Transform your fashion ideas into reality with our complete AI-powered design workflow: **Prompt → Sketch → Colors → Model → Runway Video**
 
 ![Fashion Design Pipeline](https://img.shields.io/badge/AI-Fashion%20Design-ff69b4?style=for-the-badge)
